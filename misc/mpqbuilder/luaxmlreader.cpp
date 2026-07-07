@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <vector>
 #include <set>
+#include <cctype>
 
 std::vector<std::string> special_files = {
 	  "interface\\glues\\charactercreate\\ui-charactercreate-classes.blp"
@@ -34,6 +35,18 @@ std::vector<std::string> special_files = {
 HANDLE handle = NULL;
 
 namespace fs = boost::filesystem;
+
+std::string toLower(std::string value) {
+	std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c){ return std::tolower(c); });
+	return value;
+}
+
+bool startsWithCaseInsensitive(std::string const& value, std::string const& prefix) {
+	if(value.size() < prefix.size()) {
+		return false;
+	}
+	return toLower(value.substr(0, prefix.size())) == toLower(prefix);
+}
 
 fs::path findClientLang(fs::path directory) {
     static std::set<std::string> localeIDs = {
@@ -89,15 +102,32 @@ int main(int argc, char **argv) {
 
 	for(fs::directory_iterator itr(langdir); itr != end; ++itr)
 	{
-		if (itr->path().filename().string().find("locale-", 0) == 0) {
+		std::string filename = itr->path().filename().string();
+		if (startsWithCaseInsensitive(filename, "locale-") && !fs::is_directory(itr->path())) {
 			mainfile = itr->path();
 		}
 
-		else if (itr->path().filename().string().find("patch") == 0) {
+		else if (startsWithCaseInsensitive(filename, "patch")) {
 			auto fullstr = itr->path();
 			if(!fs::is_directory(fullstr))
 			{
 				patches.push_back(fullstr);
+			}
+		}
+	}
+
+	if(mainfile.empty()) {
+		const std::string locale = langdir.filename().string();
+		std::vector<fs::path> fallbackCandidates = {
+			langdir / fs::path("locale-" + locale + ".MPQ"),
+			langdir / fs::path("locale-" + locale + ".mpq"),
+			langdir / fs::path("Locale-" + locale + ".MPQ"),
+			langdir / fs::path("Locale-" + locale + ".mpq")
+		};
+		for(auto const& candidate : fallbackCandidates) {
+			if(fs::exists(candidate) && !fs::is_directory(candidate)) {
+				mainfile = candidate;
+				break;
 			}
 		}
 	}

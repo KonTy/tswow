@@ -15,6 +15,21 @@ export namespace AuthServer {
     const authserver = new Process('authserver')
     export let connection: Connection|undefined = undefined;
 
+    function withTimeout<T>(label: string, promise: Promise<T>, ms = 15000): Promise<T> {
+        return new Promise<T>((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+            promise
+                .then((value) => {
+                    clearTimeout(timer);
+                    resolve(value);
+                })
+                .catch((err) => {
+                    clearTimeout(timer);
+                    reject(err);
+                });
+        });
+    }
+
     export function query(sql: string) {
         if(!connection) {
             throw new Error('Internal error: Auth database connection not initialized');
@@ -36,10 +51,16 @@ export namespace AuthServer {
         term.log('authserver', `Starting ${type} authserver`)
         authserver.setAutoRestart(NodeConfig.AutoRestartAuthServer)
 
-        await stop();
+        await withTimeout('authserver stop', Promise.resolve(stop()), 10000);
         if(authserver.isRunning()) {
             throw new Error(`Something else started the auth server while it was stopping`);
         }
+
+        const authExe = wfs.absPath(ipaths.bin.core.pick('trinitycore').build.pick(type).authserver.get());
+        if(!wfs.exists(authExe)) {
+            throw new Error(`Authserver binary missing: ${authExe}`);
+        }
+        term.debug('authserver', `Using authserver binary: ${authExe}`)
 
         ipaths.bin.core.pick('trinitycore').build.pick(type).authserver_conf_dist
             .copy(ipaths.coredata.authserver.authserver_conf.get()+'.dist')
@@ -48,9 +69,9 @@ export namespace AuthServer {
             .copyOnNoTarget(ipaths.coredata.authserver.authserver_conf)
 
         term.debug('authserver', 'Setting up realmlist table for authserver')
-        await query('DELETE FROM realmlist;');
-        await Promise.all(Realm.all().map(x=>query(x.realmlistSQL())));
-        await Promise.all(Dataset.all().map(x=>query(x.gamebuildSQL())));
+        await withTimeout('authserver realmlist reset', query('DELETE FROM realmlist;'));
+        await withTimeout('authserver realm insert', Promise.all(Realm.all().map(x=>query(x.realmlistSQL()))));
+        await withTimeout('authserver build_info insert', Promise.all(Dataset.all().map(x=>query(x.gamebuildSQL()))));
 
         patchTCConfig(
               ipaths.coredata.authserver.authserver_conf.get()
@@ -58,8 +79,7 @@ export namespace AuthServer {
         )
 
         authserver.startIn(ipaths.coredata.authserver.get(),
-            wfs.absPath(
-                  ipaths.bin.core.pick('trinitycore').build.pick(type).authserver.get())
+            authExe
                 , [`-c${wfs.absPath(
                     ipaths.coredata.authserver.authserver_conf.get()
                 )}`]

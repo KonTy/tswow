@@ -170,4 +170,8 @@ export async function main() {
     Module.cacheEndpoints(false);
     return initTerminal();
 }
-main();
+main().catch((err) => {
+    const message = err && err.stack ? err.stack : `${err}`;
+    term.error('misc', `Startup failed: ${message}`);
+    process.exit(1);
+});

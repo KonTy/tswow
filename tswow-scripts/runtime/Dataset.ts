@@ -98,7 +98,7 @@ export class Dataset {
     }
 
     gamebuildSQL() {
-        return `INSERT INTO build_info VALUES`
+        return `INSERT INTO build_info (build, majorVersion, minorVersion, bugfixVersion, hotfixVersion) VALUES`
             +  ` (${this.config.DatasetGameBuild}, 3, 3, 5,"a")`
             +  ` ON DUPLICATE KEY UPDATE`
             +  ` majorVersion=3,`

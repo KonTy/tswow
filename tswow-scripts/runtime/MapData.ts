@@ -18,6 +18,7 @@ import { BuildType } from '../util/BuildType';
 import { mpath, wfs } from '../util/FileSystem';
 import { WNode } from '../util/FileTree';
 import { ipaths } from '../util/Paths';
+import { isWindows } from '../util/Platform';
 import { wsys } from '../util/System';
 import { term } from '../util/Terminal';
 import { util } from '../util/Util';
@@ -25,6 +26,8 @@ import { BuildCommand } from './CommandActions';
 import { Dataset } from './Dataset';
 import { Identifier } from './Identifiers';
 import { NodeConfig } from './NodeConfig';
+import * as fs from 'fs';
+import * as path from 'path';
 
 /**
  * Contains functions for extracting map data from the client that TrinityCore uses for its AI.
@@ -32,6 +35,35 @@ import { NodeConfig } from './NodeConfig';
  * runs `mapextractor`, `vmap4extractor`, `vmap4assembler` etc. and installs the results to TrinityCore.
  */
 export namespace MapData {
+  function ensureLuaxmlMainArchive(dataset: Dataset): string[] {
+    const created: string[] = [];
+    const localeNode = dataset.client.path.Data.locale();
+    const localeDir = localeNode.get();
+    const locale = localeNode.basename();
+    const entries = fs.readdirSync(localeDir);
+    const canonicalNames = [`locale-${locale}.MPQ`, `locale-${locale}.mpq`];
+
+    for (const canonical of canonicalNames) {
+      const target = path.join(localeDir, canonical);
+      if (fs.existsSync(target)) {
+        continue;
+      }
+      const match = entries.find(name => name.toLowerCase() === canonical.toLowerCase());
+      if (!match) {
+        continue;
+      }
+      const source = path.join(localeDir, match);
+      if (!fs.statSync(source).isFile()) {
+        continue;
+      }
+      fs.symlinkSync(match, target);
+      created.push(target);
+      term.log('misc', `Linked ${canonical} -> ${match} for luaxml extraction`);
+    }
+
+    return created;
+  }
+
   function ensureLegacyDevPatch(dataset: Dataset) {
     const letter = dataset.config.ClientDevPatchLetter.toUpperCase();
     const dataDir = dataset.client.path.Data;
@@ -144,10 +176,42 @@ export namespace MapData {
     export function luaxml(dataset: Dataset) {
         term.debug('misc', `Building luaxml from ${dataset.client.path.abs()}`)
         ensureLegacyDevPatch(dataset);
-        wsys.exec(
-              `"${ipaths.bin.mpqbuilder.luaxml_exe.get()}"`
-            + ` ${dataset.path.luaxml_source.abs()}`
-            + ` ${dataset.client.path.Data.abs()}`, 'inherit');
+        const createdLinks: string[] = [];
+        if (!isWindows()) {
+          try {
+            createdLinks.push(...ensureLuaxmlMainArchive(dataset));
+          } catch (err) {
+            term.debug('misc', `luaxml preflight skipped: ${err}`);
+          }
+        }
+        try {
+          wsys.exec(
+                `"${ipaths.bin.mpqbuilder.luaxml_exe.get()}"`
+              + ` ${dataset.path.luaxml_source.abs()}`
+              + ` ${dataset.client.path.Data.abs()}`, 'inherit');
+        } catch (err) {
+          if (isWindows()) {
+            throw err;
+          }
+          term.error('misc', `luaxmlreader failed, retrying with repaired locale aliases: ${err}`);
+          try {
+            createdLinks.push(...ensureLuaxmlMainArchive(dataset));
+          } catch (repairErr) {
+            term.debug('misc', `luaxml repair preflight skipped: ${repairErr}`);
+          }
+          wsys.exec(
+                `"${ipaths.bin.mpqbuilder.luaxml_exe.get()}"`
+              + ` ${dataset.path.luaxml_source.abs()}`
+              + ` ${dataset.client.path.Data.abs()}`, 'inherit');
+        } finally {
+          for (const file of createdLinks) {
+            try {
+              fs.unlinkSync(file);
+            } catch (cleanupErr) {
+              // best-effort cleanup; stale aliases are harmless and may aid next run
+            }
+          }
+        }
         dataset.path.luaxml_source.copy(dataset.path.luaxml)
     }
 
